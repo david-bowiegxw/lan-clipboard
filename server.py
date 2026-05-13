@@ -234,9 +234,15 @@ async def ws_handler(websocket):
                 if entry is None:
                     await send_error(websocket, "Entry not found · 条目不存在")
                     continue
-                if not is_admin(peer) and entry.get("sender") != peer:
-                    await send_error(websocket, "Permission denied · 无权删除")
-                    continue
+                if entry.get("password_hash"):
+                    # Password-protected: must be admin, creator, or supply correct hash
+                    provided_ph = msg.get("password_hash", "")
+                    if (not is_admin(peer)
+                            and entry.get("sender") != peer
+                            and entry["password_hash"] != provided_ph):
+                        await send_error(websocket, "Permission denied · 无权删除")
+                        continue
+                # Public entries: anyone may delete
                 delete_entry_file(entry)
                 history[:] = [e for e in history if e["id"] != item_id]
                 log.info(f"🗑️  Deleted {item_id[:8]}… by {peer}"

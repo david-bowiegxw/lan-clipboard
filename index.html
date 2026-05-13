@@ -454,6 +454,7 @@
   .action-btn.download:hover { background: var(--accent2-a10); }
   .action-btn.danger { border-color: var(--danger-a30); color: var(--danger); }
   .action-btn.danger:hover { background: var(--danger-a10); border-color: var(--danger); }
+  .confirm-delete-msg { font-size: 12px; color: var(--danger); font-family: var(--mono); flex-shrink: 0; }
   .entry-admin { background: var(--warn-a10); border-color: var(--warn-a25); color: var(--warn); }
   .lock-badge.unlocked-timer { background: var(--accent-a5); border-color: var(--accent-a20); color: var(--accent); font-weight: 600; }
 
@@ -475,6 +476,11 @@
     from { opacity: 0; transform: scale(.92); }
     to   { opacity: 1; transform: none; }
   }
+  @keyframes modalOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: scale(.92); }
+  }
+  .modal-overlay.closing .modal { animation: modalOut .18s ease forwards; }
   .modal-title { font-size: 15px; font-weight: 600; }
   .modal-sub   { font-size: 12px; color: var(--muted); font-family: var(--mono); text-align: center; }
   .qr-wrap {
@@ -742,6 +748,8 @@ const i18n = {
     // Confirms
     confirmClear: '确定要清空所有历史记录和文件吗？',
     confirmDelete: '确定删除此条目？',
+    confirmYes: '确认',
+    confirmNo: '取消',
   },
   en: {
     logoText: 'LAN Clipboard',
@@ -819,6 +827,8 @@ const i18n = {
     // Confirms
     confirmClear: 'Clear all history and files?',
     confirmDelete: 'Delete this entry?',
+    confirmYes: 'Confirm',
+    confirmNo: 'Cancel',
   },
 };
 
@@ -917,6 +927,8 @@ let ws, reconnectTimer;
 let selectedFiles = [];
 let qrLoaded = false;
 const unlockedTimers = new Map();
+const unlockedEntries = new Map(); // id -> passwordHash for successfully unlocked entries
+const pendingDelete = new Map();   // id -> savedActionsHtml while inline confirm is showing
 const RELOCK_SECONDS = 60;
 const entries = new Map();
 
@@ -1289,6 +1301,8 @@ function clearAllTimers() {
   for (const iv of unlockedTimers.values()) clearInterval(iv);
   unlockedTimers.clear();
   pendingVerify.clear();
+  unlockedEntries.clear();
+  pendingDelete.clear();
 }
 
 function renderAll(list) {
@@ -1366,7 +1380,7 @@ function prependEntry(entry, flash, append = false) {
     actionsHtml = buildTextActions(entry, short);
   }
 
-  el.innerHTML = metaHtml + bodyHtml + (actionsHtml ? `<div class="entry-actions">${actionsHtml}</div>` : '');
+  el.innerHTML = metaHtml + bodyHtml + `<div class="entry-actions" id="ea-${entry.id}">${actionsHtml}</div>`;
 
   if (append) list.appendChild(el);
   else list.insertBefore(el, list.firstChild);
@@ -1428,6 +1442,7 @@ function handleVerifyResult(msg) {
   }
 
   const ph = pendingVerify.get(id) || '';
+  unlockedEntries.set(id, ph); // remember unlock so delete is permitted until relock
   const lockEl = document.getElementById('lock-' + id);
   const unlockedEl = document.getElementById('unlocked-' + id);
   if (!lockEl || !unlockedEl) return;
@@ -1519,18 +1534,42 @@ window.addEventListener('keydown', e => {
 // ── Admin / Delete ────────────────────────────────────────────────────────────
 function canDelete(entry) {
   if (!myIp) return false;
-  return isAdmin || entry.sender === myIp;
+  if (!entry.locked) return true; // public: anyone may delete
+  return isAdmin || entry.sender === myIp || unlockedEntries.has(entry.id);
 }
 
 function buildDeleteButton(entry) {
   if (!canDelete(entry)) return '';
-  return `<button class="action-btn danger" onclick="deleteEntry('${entry.id}')">${t('deleteBtn')}</button>`;
+  return `<button class="action-btn danger" onclick="confirmDeleteEntry('${entry.id}')">${t('deleteBtn')}</button>`;
 }
 
-function deleteEntry(id) {
-  if (!confirm(t('confirmDelete'))) return;
-  if (ws.readyState === WebSocket.OPEN)
-    ws.send(JSON.stringify({ type: 'delete', id }));
+function confirmDeleteEntry(id) {
+  const actionsEl = document.getElementById('ea-' + id);
+  if (!actionsEl) return;
+  pendingDelete.set(id, actionsEl.innerHTML);
+  actionsEl.innerHTML = `
+    <span class="confirm-delete-msg">${t('confirmDelete')}</span>
+    <button class="action-btn danger" onclick="doDeleteEntry('${id}')">${t('confirmYes')}</button>
+    <button class="action-btn" onclick="cancelDeleteEntry('${id}')">${t('confirmNo')}</button>
+  `;
+}
+
+function doDeleteEntry(id) {
+  pendingDelete.delete(id);
+  const msg = { type: 'delete', id };
+  const ph = unlockedEntries.get(id);
+  if (ph) msg.password_hash = ph;
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+function cancelDeleteEntry(id) {
+  const actionsEl = document.getElementById('ea-' + id);
+  if (!actionsEl) return;
+  const saved = pendingDelete.get(id);
+  if (saved !== undefined) {
+    actionsEl.innerHTML = saved;
+    pendingDelete.delete(id);
+  }
 }
 
 // ── Relock timer ──────────────────────────────────────────────────────────────
@@ -1555,6 +1594,7 @@ function startRelockTimer(id) {
 }
 
 function relockEntry(id) {
+  unlockedEntries.delete(id);
   const lockEl = document.getElementById('lock-' + id);
   const unlockedEl = document.getElementById('unlocked-' + id);
   if (lockEl) lockEl.style.display = '';
@@ -1583,7 +1623,11 @@ function openQR() {
     }).catch(() => { document.getElementById('qrWrap').textContent = t('qrFailed'); });
   }
 }
-function closeModal() { document.getElementById('qrModal').classList.remove('open'); }
+function closeModal() {
+  const overlay = document.getElementById('qrModal');
+  overlay.classList.add('closing');
+  setTimeout(() => { overlay.classList.remove('open', 'closing'); }, 180);
+}
 function closeQR(e) { if (e.target === document.getElementById('qrModal')) closeModal(); }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
