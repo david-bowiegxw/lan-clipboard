@@ -138,7 +138,7 @@ MIT
 
 ## Changelog · 更新日志
 
-### v2.1.0 — 2026-05-14
+### v0.2.0 — 2026-05-14
 
 **Delete permission overhaul · 删除权限重构**
 - Public entries can now be deleted by **any** connected user (previously restricted to creator / admin)  
@@ -160,7 +160,7 @@ MIT
 
 ---
 
-### v2.0.0 — 2026-05-13 · Initial release · 首次发布
+### v0.1.0 — 2026-05-13 · Initial release · 首次发布
 
 - Real-time text & file sharing over WebSocket + HTTP  
   WebSocket + HTTP 实时文本与文件共享
