@@ -1,0 +1,13 @@
+{
+  "name": "LAN Clipboard · 局域网剪贴板",
+  "short_name": "LAN Clipboard",
+  "description": "Share text and files instantly across your local network.",
+  "icons": [
+    { "src": "/icon/lan_clipboard_192x192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon/lan_clipboard_512x512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#1e1e2e",
+  "background_color": "#1e1e2e"
+}
