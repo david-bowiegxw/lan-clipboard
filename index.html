@@ -572,6 +572,9 @@
       gap: 8px 8px;
     }
     .meta-input-wrap { max-width: none; min-width: 0; }
+    /* Mobile: textarea auto-grows with content up to 40vh, then scrolls internally.
+       The desktop drag-to-resize handle is suppressed because it's awkward to grab on touch. */
+    textarea { resize: none; max-height: 40vh; overflow-y: auto; }
   }
 </style>
 </head>
@@ -1302,6 +1305,7 @@ async function sendContent() {
 
   ws.send(JSON.stringify(msg));
   ta.value = '';
+  resetInputHeight();
   updateCharCount();
   resetMetaInputs('text');
 }
@@ -1833,6 +1837,7 @@ function toggleExpand(id, btn) {
 function fillInput(id) {
   document.getElementById('inputArea').value = getContent(id);
   updateCharCount();
+  autoGrowInput();
   document.getElementById('inputArea').focus();
   switchTab('text', document.getElementById('tabTextBtn'));
 }
@@ -1843,7 +1848,24 @@ function updateCharCount() {
   document.getElementById('charCount').textContent =
     inputArea.value.length + ' ' + t('chars');
 }
-inputArea.addEventListener('input', updateCharCount);
+
+// Mobile auto-grow: matches the iMessage / WhatsApp pattern. On desktop the user
+// already has the native drag handle (resize: vertical), so we only run on small
+// viewports — otherwise typing would constantly fight the user's manual size.
+const mqlMobile = window.matchMedia('(max-width: 500px)');
+function autoGrowInput() {
+  if (!mqlMobile.matches) return;
+  inputArea.style.height = 'auto';
+  inputArea.style.height = inputArea.scrollHeight + 'px';
+}
+function resetInputHeight() {
+  inputArea.style.height = '';
+}
+mqlMobile.addEventListener('change', () => {
+  if (mqlMobile.matches) autoGrowInput(); else resetInputHeight();
+});
+
+inputArea.addEventListener('input', () => { updateCharCount(); autoGrowInput(); });
 window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     if (document.getElementById('tab-file').classList.contains('active')) {

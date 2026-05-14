@@ -140,6 +140,10 @@ MIT
 
 ### v0.3.2 — 2026-05-14
 
+**Mobile UX · 移动端输入框**
+- Text input now auto-grows with content on phones (up to 40 vh, then scrolls internally). Desktop keeps its native drag-to-resize handle untouched  
+  手机端文本输入框随内容自动增高（最高 40vh，超出后内部滚动），桌面端继续保留原生拖拽手柄
+
 **UI polish · 交互动效**
 - Active tab indicator now slides between Text / File with a cubic-bezier transform instead of jumping. Tab content fades + translates in on switch  
   Text / File 切换时活跃指示器使用平移过渡（cubic-bezier），不再瞬切；面板内容淡入并轻微平移
