@@ -138,6 +138,28 @@ MIT
 
 ## Changelog · 更新日志
 
+### v0.3.1 — 2026-05-14
+
+**Bug fixes · 问题修复**
+- Password-protected text and small-file uploads no longer fail silently on plain HTTP LAN addresses. The Web Crypto API requires a secure context (HTTPS / `localhost`), so E2E mode now detects an insecure context up front and gracefully falls back to the legacy access-control path with a clear toast notification  
+  在普通 HTTP 局域网地址下，加密文本与小文件上传不再静默失败。Web Crypto 仅在安全上下文（HTTPS / `localhost`）可用，E2E 现在会提前检测并自动回退至访问控制模式，并通过提示告知用户
+
+**Performance · 性能优化**
+- E2E file downloads no longer re-derive the AES key. The CryptoKey produced at unlock is cached for the rest of the session, eliminating a second 100k-iteration PBKDF2 (~100–300 ms per download)  
+  E2E 文件下载不再重复推导密钥，解锁时生成的 CryptoKey 会缓存到会话结束，省去第二次 PBKDF2（每次下载 ~100–300 ms）
+- E2E file uploads run PBKDF2 and the file read in parallel, and the plaintext buffer is released as soon as encryption completes  
+  E2E 文件上传将 PBKDF2 推导与文件读取并行执行，加密结束后立即释放明文缓冲，峰值内存更低
+
+**Code quality · 代码质量**
+- Crypto helpers split into a small key-derivation step plus key-based encrypt/decrypt, so callers can derive once and reuse  
+  加密辅助函数拆分为密钥推导与基于密钥的加解密两层，调用方可推导一次后复用
+- Server-side `download_handler` and `push` / `upload_handler` branches consolidated; removed the `pass`-placeholder smell and the WHAT-restating comments  
+  服务端 `download_handler` 与 `push` / `upload_handler` 分支合并，移除占位 `pass` 与冗余注释
+- Plaintext is cleared from in-memory entries on relock; lock-badge rendering deduplicated via a shared helper  
+  重锁时清除已缓存的明文；锁定徽章渲染抽出公共方法
+
+---
+
 ### v0.3.0 — 2026-05-14
 
 **E2E encryption · 端对端加密**

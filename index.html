@@ -748,6 +748,7 @@ const i18n = {
     toastSessionExpired: '会话已过期，请重新解锁',
     toastLargeFileNoE2E: '文件超过 100MB，将使用访问控制（非 E2E）',
     toastMultiFileNoE2E: '多文件上传将使用访问控制（非 E2E）',
+    toastInsecureNoE2E: '当前为非安全上下文（需 HTTPS 或 localhost），已回退至访问控制（非 E2E）',
     toastFileReceived: '收到新文件',
     toastContentReceived: '收到新内容',
     toastFileSuccess: '文件上传成功 ✓',
@@ -837,6 +838,7 @@ const i18n = {
     toastSessionExpired: 'Session expired, please unlock again',
     toastLargeFileNoE2E: 'File > 100 MB — using access control (not E2E)',
     toastMultiFileNoE2E: 'Multi-file upload uses access control (not E2E)',
+    toastInsecureNoE2E: 'Insecure context (HTTPS / localhost required) — falling back to access control (not E2E)',
     toastFileReceived: 'New file received',
     toastContentReceived: 'New content received',
     toastFileSuccess: 'File uploaded ✓',
@@ -951,7 +953,8 @@ let ws, reconnectTimer;
 let selectedFiles = [];
 let qrLoaded = false;
 const unlockedTimers = new Map();
-const unlockedEntries = new Map(); // id -> passwordHash for successfully unlocked entries
+// id -> password hash (non-E2E, sent to server on delete) or CryptoKey (E2E, used to decrypt file body on download).
+const unlockedEntries = new Map();
 const pendingDelete = new Map();   // id -> savedActionsHtml while inline confirm is showing
 const RELOCK_SECONDS = 60;
 const entries = new Map();
@@ -1011,6 +1014,12 @@ async function sha256(str) {
 }
 
 // ── E2E Crypto (Web Crypto API) ───────────────────────────────────────────────
+// Web Crypto requires a secure context. On a plain HTTP LAN IP, crypto.subtle is undefined,
+// so callers must fall back to the legacy password_hash access-control path.
+function e2eAvailable() {
+  return !!(window.isSecureContext && window.crypto && window.crypto.subtle);
+}
+
 const b64enc = buf => {
   const u8 = new Uint8Array(buf); let s = '';
   for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
@@ -1027,6 +1036,12 @@ async function e2eKey(password, saltArr) {
   );
 }
 
+async function aesGcmDecrypt(cipherData, ivB64, key) {
+  try {
+    return await crypto.subtle.decrypt({name: 'AES-GCM', iv: b64dec(ivB64)}, key, cipherData);
+  } catch { return null; }
+}
+
 async function encryptText(text, password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv   = crypto.getRandomValues(new Uint8Array(12));
@@ -1036,21 +1051,15 @@ async function encryptText(text, password) {
   return {salt: b64enc(salt), iv: b64enc(iv), cipher: b64enc(cipher)};
 }
 
-async function decryptText(cipherB64, saltB64, ivB64, password) {
-  try {
-    const key = await e2eKey(password, b64dec(saltB64));
-    const plain = await crypto.subtle.decrypt({name: 'AES-GCM', iv: b64dec(ivB64)},
-      key, b64dec(cipherB64));
-    return new TextDecoder().decode(plain);
-  } catch { return null; }
+async function decryptTextWithKey(cipherB64, ivB64, key) {
+  const buf = await aesGcmDecrypt(b64dec(cipherB64), ivB64, key);
+  return buf === null ? null : new TextDecoder().decode(buf);
 }
 
-// Returns {salt, iv, check_cipher, check_iv, cipherBuf}
-async function encryptFile(buffer, password) {
-  const salt     = crypto.getRandomValues(new Uint8Array(16));
-  const fileIv   = crypto.getRandomValues(new Uint8Array(12));
-  const checkIv  = crypto.getRandomValues(new Uint8Array(12));
-  const key = await e2eKey(password, salt);
+// Caller supplies a pre-derived key + salt so PBKDF2 can run in parallel with file I/O.
+async function encryptFile(buffer, key, salt) {
+  const fileIv  = crypto.getRandomValues(new Uint8Array(12));
+  const checkIv = crypto.getRandomValues(new Uint8Array(12));
   const [cipher, checkCipher] = await Promise.all([
     crypto.subtle.encrypt({name: 'AES-GCM', iv: fileIv}, key, buffer),
     crypto.subtle.encrypt({name: 'AES-GCM', iv: checkIv}, key,
@@ -1063,21 +1072,9 @@ async function encryptFile(buffer, password) {
   };
 }
 
-async function decryptFile(cipherBuf, saltB64, ivB64, password) {
-  try {
-    const key = await e2eKey(password, b64dec(saltB64));
-    return crypto.subtle.decrypt({name: 'AES-GCM', iv: b64dec(ivB64)}, key, cipherBuf);
-  } catch { return null; }
-}
-
-// Verify password for E2E file entry using the stored check_cipher
-async function verifyE2EFile(entry, password) {
-  try {
-    const key = await e2eKey(password, b64dec(entry.salt));
-    const plain = await crypto.subtle.decrypt(
-      {name: 'AES-GCM', iv: b64dec(entry.check_iv)}, key, b64dec(entry.check_cipher));
-    return new TextDecoder().decode(plain) === 'lan_clipboard_ok';
-  } catch { return false; }
+async function verifyE2EFileWithKey(entry, key) {
+  const buf = await aesGcmDecrypt(b64dec(entry.check_cipher), entry.check_iv, key);
+  return buf !== null && new TextDecoder().decode(buf) === 'lan_clipboard_ok';
 }
 
 function fmtSize(bytes) {
@@ -1240,9 +1237,12 @@ async function sendContent() {
   const uploader = document.getElementById('textUploader').value.trim();
   const title    = document.getElementById('textTitle').value.trim();
   let msg;
-  if (pw) {
+  if (pw && e2eAvailable()) {
     const {salt, iv, cipher} = await encryptText(content, pw);
     msg = {type: 'push', cipher, salt, iv, uploader, title};
+  } else if (pw) {
+    toast(t('toastInsecureNoE2E'), 'warn');
+    msg = {type: 'push', content, password_hash: await sha256(pw), uploader, title};
   } else {
     msg = {type: 'push', content, uploader, title};
   }
@@ -1353,10 +1353,15 @@ async function uploadFile() {
   if (pw === null) return;
 
   const isSingle = selectedFiles.length === 1;
-  const isE2E = pw && isSingle && selectedFiles[0].size <= E2E_FILE_LIMIT;
+  const e2eOk    = e2eAvailable();
+  const isE2E    = pw && isSingle && selectedFiles[0].size <= E2E_FILE_LIMIT && e2eOk;
 
   if (pw && !isE2E) {
-    toast(isSingle ? t('toastLargeFileNoE2E') : t('toastMultiFileNoE2E'), 'warn');
+    let reason;
+    if (!e2eOk)        reason = 'toastInsecureNoE2E';
+    else if (!isSingle) reason = 'toastMultiFileNoE2E';
+    else                reason = 'toastLargeFileNoE2E';
+    toast(t(reason), 'warn');
   }
 
   if (isE2E) {
@@ -1377,9 +1382,12 @@ async function uploadFileE2E(file, password) {
   label.textContent = t('toastEncrypting');
 
   try {
-    const buf = await file.arrayBuffer();
+    const saltArr = crypto.getRandomValues(new Uint8Array(16));
+    // Run PBKDF2 in parallel with the file read — both are slow and independent.
+    let [key, buf] = await Promise.all([e2eKey(password, saltArr), file.arrayBuffer()]);
     fill.style.width = '40%';
-    const {salt, iv, check_cipher, check_iv, cipherBuf} = await encryptFile(buf, password);
+    const {salt, iv, check_cipher, check_iv, cipherBuf} = await encryptFile(buf, key, saltArr);
+    buf = null; // release the plaintext buffer; the cipher buffer is what we ship
     fill.style.width = '60%';
     label.textContent = t('uploading');
 
@@ -1516,10 +1524,9 @@ function prependEntry(entry, flash, append = false) {
   else                    { senderLabel = escHtml(entry.sender); senderClass = 'entry-ip'; }
 
   const isE2E = !!entry.e2e;
+  const badge = lockBadgeAttrs(entry);
   const lockBadgeHtml = isLocked
-    ? (isE2E
-       ? `<span class="lock-badge e2e-badge" id="lock-badge-${entry.id}">${t('e2eBadge')}</span>`
-       : `<span class="lock-badge" id="lock-badge-${entry.id}">${t('lockedBadge')}</span>`)
+    ? `<span class="${badge.cls}" id="lock-badge-${entry.id}">${badge.text}</span>`
     : '';
   const metaHtml = `
     <div class="entry-meta">
@@ -1590,6 +1597,16 @@ function buildFileActions(entry, passwordHash) {
   return `<button class="action-btn download" onclick="downloadFile('${entry.id}','${ph}')">${t('downloadBtn')}</button>${buildDeleteButton(entry)}`;
 }
 
+function buildE2EFileActions(entry) {
+  return `<button class="action-btn download" onclick="downloadE2EFile('${entry.id}')">${t('downloadBtn')}</button>${buildDeleteButton(entry)}`;
+}
+
+function lockBadgeAttrs(entry) {
+  return entry.e2e
+    ? {text: t('e2eBadge'),    cls: 'lock-badge e2e-badge'}
+    : {text: t('lockedBadge'), cls: 'lock-badge'};
+}
+
 function buildTextActions(entry, short) {
   return `
     <button class="action-btn" onclick="copyEntry('${entry.id}',this)">${t('copyBtn')}</button>
@@ -1612,62 +1629,55 @@ async function verifyEntry(id) {
   if (!entry) return;
 
   if (entry.e2e) {
-    const lockEl    = document.getElementById('lock-' + id);
+    const key = await e2eKey(pw, b64dec(entry.salt));
+    const lockEl     = document.getElementById('lock-' + id);
     const unlockedEl = document.getElementById('unlocked-' + id);
+    let bodyHtml, actionsHtml;
 
     if (entry.type === 'text') {
-      const plain = await decryptText(entry.cipher, entry.salt, entry.iv, pw);
+      const plain = await decryptTextWithKey(entry.cipher, entry.iv, key);
       if (plain === null) {
         inp.classList.add('error'); inp.value = ''; inp.focus();
         toast(t('toastWrongPassword'), 'err');
         return;
       }
-      unlockedEntries.set(id, pw);
-      if (!lockEl || !unlockedEl) return;
-      lockEl.style.display = 'none';
       const short = plain.length > 400;
-      unlockedEl.innerHTML = `<div class="entry-content${short ? ' overflows' : ''}" id="ec-${id}">${linkify(plain)}</div>`;
+      bodyHtml = `<div class="entry-content${short ? ' overflows' : ''}" id="ec-${id}">${linkify(plain)}</div>`;
       entry.content = plain;
       entries.set(id, entry);
-      unlockedEl.style.display = '';
-      const actionsEl = lockEl.closest('.entry').querySelector('.entry-actions');
-      if (actionsEl) actionsEl.innerHTML = buildTextActions(entry, short);
+      actionsHtml = buildTextActions(entry, short);
     } else {
-      // E2E file: verify via check_cipher, defer actual decrypt to download time
-      const ok = await verifyE2EFile(entry, pw);
-      if (!ok) {
+      if (!await verifyE2EFileWithKey(entry, key)) {
         inp.classList.add('error'); inp.value = ''; inp.focus();
         toast(t('toastWrongPassword'), 'err');
         return;
       }
-      unlockedEntries.set(id, pw);
-      if (!lockEl || !unlockedEl) return;
-      lockEl.style.display = 'none';
-      unlockedEl.innerHTML = buildFileBody(entry);
-      unlockedEl.style.display = '';
-      const actionsEl = lockEl.closest('.entry').querySelector('.entry-actions');
-      if (actionsEl) actionsEl.innerHTML = buildE2EFileActions(entry);
+      bodyHtml = buildFileBody(entry);
+      actionsHtml = buildE2EFileActions(entry);
     }
 
+    // Cache the derived CryptoKey (not the password) so file downloads skip a second PBKDF2.
+    unlockedEntries.set(id, key);
+    if (!lockEl || !unlockedEl) return;
+    lockEl.style.display = 'none';
+    unlockedEl.innerHTML = bodyHtml;
+    unlockedEl.style.display = '';
+    const actionsEl = lockEl.closest('.entry').querySelector('.entry-actions');
+    if (actionsEl) actionsEl.innerHTML = actionsHtml;
     startRelockTimer(id);
     toast(t('toastUnlocked'));
     return;
   }
 
-  // Non-E2E path: server verifies password_hash (large file access control)
   const ph = await sha256(pw);
   ws.send(JSON.stringify({ type: 'verify', id, password_hash: ph }));
   pendingVerify.set(id, ph);
 }
 
-function buildE2EFileActions(entry) {
-  return `<button class="action-btn download" onclick="downloadE2EFile('${entry.id}')">${t('downloadBtn')}</button>${buildDeleteButton(entry)}`;
-}
-
 async function downloadE2EFile(id) {
   const entry = entries.get(id);
-  const pw    = unlockedEntries.get(id);
-  if (!entry || !pw) { toast(t('toastSessionExpired'), 'err'); return; }
+  const key   = unlockedEntries.get(id);
+  if (!entry || !key) { toast(t('toastSessionExpired'), 'err'); return; }
 
   const btn = document.querySelector(`#ea-${id} .download`);
   if (btn) { btn.disabled = true; btn.textContent = t('toastDecrypting'); }
@@ -1675,15 +1685,14 @@ async function downloadE2EFile(id) {
   try {
     const resp = await fetch(`/download/${id}`);
     if (!resp.ok) { toast(t('toastDownloadFailed'), 'err'); return; }
-    const cipherBuf = await resp.arrayBuffer();
-    const plainBuf  = await decryptFile(cipherBuf, entry.salt, entry.iv, pw);
+    const plainBuf = await aesGcmDecrypt(await resp.arrayBuffer(), entry.iv, key);
     if (!plainBuf) { toast(t('toastWrongPassword'), 'err'); return; }
 
     const url = URL.createObjectURL(new Blob([plainBuf]));
     const a = document.createElement('a');
     a.href = url; a.download = entry.filename;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    setTimeout(() => URL.revokeObjectURL(url), 5_000);
   } catch {
     toast(t('toastDownloadFailed'), 'err');
   } finally {
@@ -1861,6 +1870,9 @@ function startRelockTimer(id) {
 
 function relockEntry(id) {
   unlockedEntries.delete(id);
+  const entry = entries.get(id);
+  // Strip the cached plaintext that verifyEntry / handleVerifyResult stashed on the entry.
+  if (entry) delete entry.content;
   const lockEl = document.getElementById('lock-' + id);
   const unlockedEl = document.getElementById('unlocked-' + id);
   if (lockEl) {
@@ -1869,22 +1881,16 @@ function relockEntry(id) {
     if (inp) inp.value = '';
   }
   if (unlockedEl) { unlockedEl.innerHTML = ''; unlockedEl.style.display = 'none'; }
-  const badge = document.getElementById('lock-badge-' + id);
-  if (badge) {
-    const entry = entries.get(id);
-    if (entry?.e2e) {
-      badge.textContent = t('e2eBadge'); badge.className = 'lock-badge e2e-badge';
-    } else {
-      badge.textContent = t('lockedBadge'); badge.className = 'lock-badge';
-    }
+  const badgeEl = document.getElementById('lock-badge-' + id);
+  if (badgeEl && entry) {
+    const b = lockBadgeAttrs(entry);
+    badgeEl.textContent = b.text;
+    badgeEl.className   = b.cls;
   }
   const entryEl = document.querySelector(`.entry[data-id="${id}"]`);
   if (entryEl) {
     const actionsEl = entryEl.querySelector('.entry-actions');
-    if (actionsEl) {
-      const entry = entries.get(id);
-      actionsEl.innerHTML = entry ? buildDeleteButton(entry) : '';
-    }
+    if (actionsEl) actionsEl.innerHTML = entry ? buildDeleteButton(entry) : '';
   }
   toast(t('toastRelocked'));
 }
