@@ -385,6 +385,9 @@
     background: var(--warn-a10); border: 1px solid var(--warn-a25);
     color: var(--warn); border-radius: 4px; padding: 1px 7px; font-size: 10px;
   }
+  .lock-badge.e2e-badge {
+    background: rgba(99,102,241,.15); border-color: rgba(99,102,241,.35); color: #818cf8;
+  }
 
   .entry-content {
     font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
@@ -715,8 +718,11 @@ const i18n = {
     textBadge: '📝 文本',
     fileBadge: '📁 文件',
     lockedBadge: '🔒 需密码',
+    e2eBadge: '🔐 E2E',
     lockedDesc: (isFile) => isFile ? '该文件受密码保护' : '该内容受密码保护',
+    lockedDescE2E: (isFile) => isFile ? '该文件已端对端加密' : '该内容已端对端加密',
     lockedHint: '请输入密码查看',
+    lockedHintE2E: '输入密码在本地解密，服务器无法读取',
     pwInputPlaceholder: '密码…',
     unlockBtn: '解锁',
     adminMine: '管理员 · 本机',
@@ -735,6 +741,13 @@ const i18n = {
     toastCopied: '已复制到剪贴板',
     toastUnlocked: '🔓 已解锁',
     toastRelocked: '🔒 已重新锁定',
+    toastWrongPassword: '密码错误',
+    toastEncrypting: '加密中…',
+    toastDecrypting: '解密中…',
+    toastDownloadFailed: '下载失败',
+    toastSessionExpired: '会话已过期，请重新解锁',
+    toastLargeFileNoE2E: '文件超过 100MB，将使用访问控制（非 E2E）',
+    toastMultiFileNoE2E: '多文件上传将使用访问控制（非 E2E）',
     toastFileReceived: '收到新文件',
     toastContentReceived: '收到新内容',
     toastFileSuccess: '文件上传成功 ✓',
@@ -794,8 +807,11 @@ const i18n = {
     textBadge: '📝 Text',
     fileBadge: '📁 File',
     lockedBadge: '🔒 Password',
+    e2eBadge: '🔐 E2E',
     lockedDesc: (isFile) => isFile ? 'This file is password protected' : 'This content is password protected',
+    lockedDescE2E: (isFile) => isFile ? 'This file is E2E encrypted' : 'This content is E2E encrypted',
     lockedHint: 'Enter the password to view',
+    lockedHintE2E: 'Enter password to decrypt locally — server never sees the plaintext',
     pwInputPlaceholder: 'Password…',
     unlockBtn: 'Unlock',
     adminMine: 'Admin · This device',
@@ -814,6 +830,13 @@ const i18n = {
     toastCopied: 'Copied to clipboard',
     toastUnlocked: '🔓 Unlocked',
     toastRelocked: '🔒 Relocked',
+    toastWrongPassword: 'Wrong password',
+    toastEncrypting: 'Encrypting…',
+    toastDecrypting: 'Decrypting…',
+    toastDownloadFailed: 'Download failed',
+    toastSessionExpired: 'Session expired, please unlock again',
+    toastLargeFileNoE2E: 'File > 100 MB — using access control (not E2E)',
+    toastMultiFileNoE2E: 'Multi-file upload uses access control (not E2E)',
     toastFileReceived: 'New file received',
     toastContentReceived: 'New content received',
     toastFileSuccess: 'File uploaded ✓',
@@ -922,6 +945,7 @@ function toggleTheme() {
 // ── Config ────────────────────────────────────────────────────────────────────
 const WS_PORT = 8765;
 const wsUrl = `ws://${location.hostname}:${WS_PORT}`;
+const E2E_FILE_LIMIT = 100 * 1024 * 1024; // 100 MB
 let myIp = null, serverIp = null, isAdmin = false;
 let ws, reconnectTimer;
 let selectedFiles = [];
@@ -984,6 +1008,76 @@ async function sha256(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
   }
   return sha256Sync(str);
+}
+
+// ── E2E Crypto (Web Crypto API) ───────────────────────────────────────────────
+const b64enc = buf => {
+  const u8 = new Uint8Array(buf); let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+};
+const b64dec = str => Uint8Array.from(atob(str), c => c.charCodeAt(0));
+
+async function e2eKey(password, saltArr) {
+  const raw = await crypto.subtle.importKey('raw', new TextEncoder().encode(password),
+    'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name: 'PBKDF2', salt: saltArr, iterations: 100_000, hash: 'SHA-256'},
+    raw, {name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptText(text, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const key  = await e2eKey(password, salt);
+  const cipher = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, key,
+    new TextEncoder().encode(text));
+  return {salt: b64enc(salt), iv: b64enc(iv), cipher: b64enc(cipher)};
+}
+
+async function decryptText(cipherB64, saltB64, ivB64, password) {
+  try {
+    const key = await e2eKey(password, b64dec(saltB64));
+    const plain = await crypto.subtle.decrypt({name: 'AES-GCM', iv: b64dec(ivB64)},
+      key, b64dec(cipherB64));
+    return new TextDecoder().decode(plain);
+  } catch { return null; }
+}
+
+// Returns {salt, iv, check_cipher, check_iv, cipherBuf}
+async function encryptFile(buffer, password) {
+  const salt     = crypto.getRandomValues(new Uint8Array(16));
+  const fileIv   = crypto.getRandomValues(new Uint8Array(12));
+  const checkIv  = crypto.getRandomValues(new Uint8Array(12));
+  const key = await e2eKey(password, salt);
+  const [cipher, checkCipher] = await Promise.all([
+    crypto.subtle.encrypt({name: 'AES-GCM', iv: fileIv}, key, buffer),
+    crypto.subtle.encrypt({name: 'AES-GCM', iv: checkIv}, key,
+      new TextEncoder().encode('lan_clipboard_ok')),
+  ]);
+  return {
+    salt: b64enc(salt), iv: b64enc(fileIv),
+    check_cipher: b64enc(checkCipher), check_iv: b64enc(checkIv),
+    cipherBuf: new Uint8Array(cipher),
+  };
+}
+
+async function decryptFile(cipherBuf, saltB64, ivB64, password) {
+  try {
+    const key = await e2eKey(password, b64dec(saltB64));
+    return crypto.subtle.decrypt({name: 'AES-GCM', iv: b64dec(ivB64)}, key, cipherBuf);
+  } catch { return null; }
+}
+
+// Verify password for E2E file entry using the stored check_cipher
+async function verifyE2EFile(entry, password) {
+  try {
+    const key = await e2eKey(password, b64dec(entry.salt));
+    const plain = await crypto.subtle.decrypt(
+      {name: 'AES-GCM', iv: b64dec(entry.check_iv)}, key, b64dec(entry.check_cipher));
+    return new TextDecoder().decode(plain) === 'lan_clipboard_ok';
+  } catch { return false; }
 }
 
 function fmtSize(bytes) {
@@ -1049,14 +1143,12 @@ function toggleEye(inputId, btn) {
   btn.textContent = inp.type === 'password' ? '👁' : '🙈';
 }
 
-// Reads the password input for `prefix` ('text'|'file') when the checkbox is checked.
-// Returns the SHA-256 hex, '' if unchecked, or null if the user enabled the checkbox
-// but left the field empty (already shows a toast).
-async function collectPasswordHash(prefix) {
+// Returns the raw password string, '' if unchecked, null if box is checked but field is empty.
+function collectPassword(prefix) {
   if (!document.getElementById(prefix + 'PwCheck').checked) return '';
   const pw = document.getElementById(prefix + 'PwInput').value;
   if (!pw) { toast(t('toastPwRequired'), 'warn'); return null; }
-  return sha256(pw);
+  return pw;
 }
 
 function resetMetaInputs(prefix) {
@@ -1142,14 +1234,20 @@ async function sendContent() {
   const content = ta.value.trim();
   if (!content || ws.readyState !== WebSocket.OPEN) return;
 
-  const password_hash = await collectPasswordHash('text');
-  if (password_hash === null) return;
+  const pw = collectPassword('text');
+  if (pw === null) return;
 
-  ws.send(JSON.stringify({
-    type: 'push', content, password_hash,
-    uploader: document.getElementById('textUploader').value.trim(),
-    title: document.getElementById('textTitle').value.trim(),
-  }));
+  const uploader = document.getElementById('textUploader').value.trim();
+  const title    = document.getElementById('textTitle').value.trim();
+  let msg;
+  if (pw) {
+    const {salt, iv, cipher} = await encryptText(content, pw);
+    msg = {type: 'push', cipher, salt, iv, uploader, title};
+  } else {
+    msg = {type: 'push', content, uploader, title};
+  }
+
+  ws.send(JSON.stringify(msg));
   ta.value = '';
   updateCharCount();
   resetMetaInputs('text');
@@ -1251,23 +1349,100 @@ async function uploadFile() {
     }
   }
 
-  const password_hash = await collectPasswordHash('file');
-  if (password_hash === null) return;
+  const pw = collectPassword('file');
+  if (pw === null) return;
 
+  const isSingle = selectedFiles.length === 1;
+  const isE2E = pw && isSingle && selectedFiles[0].size <= E2E_FILE_LIMIT;
+
+  if (pw && !isE2E) {
+    toast(isSingle ? t('toastLargeFileNoE2E') : t('toastMultiFileNoE2E'), 'warn');
+  }
+
+  if (isE2E) {
+    await uploadFileE2E(selectedFiles[0], pw);
+  } else {
+    const passwordHash = pw ? await sha256(pw) : '';
+    await uploadFileLegacy(passwordHash);
+  }
+}
+
+async function uploadFileE2E(file, password) {
+  const prog  = document.getElementById('uploadProgress');
+  const fill  = document.getElementById('progressFill');
+  const label = document.getElementById('progressLabel');
+  prog.classList.add('show');
+  document.getElementById('uploadBtn').disabled = true;
+  fill.style.width = '0%';
+  label.textContent = t('toastEncrypting');
+
+  try {
+    const buf = await file.arrayBuffer();
+    fill.style.width = '40%';
+    const {salt, iv, check_cipher, check_iv, cipherBuf} = await encryptFile(buf, password);
+    fill.style.width = '60%';
+    label.textContent = t('uploading');
+
+    const uploader = document.getElementById('fileUploader').value.trim();
+    const title    = document.getElementById('fileTitle').value.trim();
+    const fd = new FormData();
+    fd.append('file', new Blob([cipherBuf], {type: 'application/octet-stream'}), file.name);
+    fd.append('e2e', '1');
+    fd.append('salt', salt);
+    fd.append('iv', iv);
+    fd.append('check_cipher', check_cipher);
+    fd.append('check_iv', check_iv);
+    fd.append('uploader', uploader);
+    fd.append('title', title);
+
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) {
+          const pct = Math.round(60 + e.loaded / e.total * 40);
+          fill.style.width = pct + '%';
+          label.textContent = tf('uploadingPct', pct, fmtSize(e.loaded), fmtSize(e.total));
+        }
+      };
+      xhr.onload = () => resolve(xhr);
+      xhr.onerror = reject;
+      xhr.open('POST', '/upload');
+      xhr.send(fd);
+    }).then(xhr => {
+      prog.classList.remove('show');
+      if (xhr.status === 200) {
+        toast(t('toastFileSuccess'));
+        clearFile();
+        resetMetaInputs('file');
+      } else {
+        let msg = xhr.status;
+        try { msg = JSON.parse(xhr.responseText)?.msg || msg; } catch {}
+        toast(tf('toastUploadFailed', msg), 'err');
+        document.getElementById('uploadBtn').disabled = false;
+      }
+    });
+  } catch {
+    prog.classList.remove('show');
+    toast(t('toastNetworkError'), 'err');
+    document.getElementById('uploadBtn').disabled = false;
+  }
+}
+
+async function uploadFileLegacy(passwordHash) {
   const fd = new FormData();
   for (const f of selectedFiles) fd.append('file', f);
-  fd.append('password_hash', password_hash);
+  fd.append('password_hash', passwordHash);
   fd.append('uploader', document.getElementById('fileUploader').value.trim());
   fd.append('title', document.getElementById('fileTitle').value.trim());
 
-  const prog = document.getElementById('uploadProgress');
-  const fill = document.getElementById('progressFill');
+  const prog  = document.getElementById('uploadProgress');
+  const fill  = document.getElementById('progressFill');
   const label = document.getElementById('progressLabel');
   prog.classList.add('show');
   document.getElementById('uploadBtn').disabled = true;
 
   const xhr = new XMLHttpRequest();
-  xhr.upload.onprogress = (e) => {
+  xhr.upload.onprogress = e => {
     if (e.lengthComputable) {
       const pct = Math.round(e.loaded / e.total * 100);
       fill.style.width = pct + '%';
@@ -1340,10 +1515,16 @@ function prependEntry(entry, flash, append = false) {
   else if (senderIsAdmin) { senderLabel = t('adminLabel'); senderClass = 'entry-ip entry-admin'; }
   else                    { senderLabel = escHtml(entry.sender); senderClass = 'entry-ip'; }
 
+  const isE2E = !!entry.e2e;
+  const lockBadgeHtml = isLocked
+    ? (isE2E
+       ? `<span class="lock-badge e2e-badge" id="lock-badge-${entry.id}">${t('e2eBadge')}</span>`
+       : `<span class="lock-badge" id="lock-badge-${entry.id}">${t('lockedBadge')}</span>`)
+    : '';
   const metaHtml = `
     <div class="entry-meta">
       <span class="entry-type-badge ${isFile ? 'file' : ''}">${isFile ? t('fileBadge') : t('textBadge')}</span>
-      ${isLocked ? `<span class="lock-badge" id="lock-badge-${entry.id}">${t('lockedBadge')}</span>` : ''}
+      ${lockBadgeHtml}
       ${entry.uploader ? `<span class="entry-uploader">👤 ${escHtml(entry.uploader)}</span>` : ''}
       <span>${escHtml(entry.date)} ${escHtml(entry.time)}</span>
       <span class="${senderClass}">${senderLabel}</span>
@@ -1356,11 +1537,14 @@ function prependEntry(entry, flash, append = false) {
   let actionsHtml = '';
 
   if (isLocked) {
+    const lockIcon = isE2E ? '🔐' : '🔒';
+    const lockDesc = isE2E ? tf('lockedDescE2E', isFile) : tf('lockedDesc', isFile);
+    const lockHint = isE2E ? t('lockedHintE2E') : t('lockedHint');
     bodyHtml = `
       ${titleHtml}
       <div class="locked-overlay" id="lock-${entry.id}">
-        <div class="locked-icon">🔒</div>
-        <div class="locked-desc">${tf('lockedDesc', isFile)}<br>${t('lockedHint')}</div>
+        <div class="locked-icon">${lockIcon}</div>
+        <div class="locked-desc">${lockDesc}<br>${lockHint}</div>
         <div class="pw-verify-row">
           <input class="pw-verify-input" type="password" id="vp-${entry.id}"
             placeholder="${t('pwInputPlaceholder')}"
@@ -1423,9 +1607,88 @@ async function verifyEntry(id) {
   const pw = inp.value;
   if (!pw) { inp.classList.add('error'); return; }
   inp.classList.remove('error');
+
+  const entry = entries.get(id);
+  if (!entry) return;
+
+  if (entry.e2e) {
+    const lockEl    = document.getElementById('lock-' + id);
+    const unlockedEl = document.getElementById('unlocked-' + id);
+
+    if (entry.type === 'text') {
+      const plain = await decryptText(entry.cipher, entry.salt, entry.iv, pw);
+      if (plain === null) {
+        inp.classList.add('error'); inp.value = ''; inp.focus();
+        toast(t('toastWrongPassword'), 'err');
+        return;
+      }
+      unlockedEntries.set(id, pw);
+      if (!lockEl || !unlockedEl) return;
+      lockEl.style.display = 'none';
+      const short = plain.length > 400;
+      unlockedEl.innerHTML = `<div class="entry-content${short ? ' overflows' : ''}" id="ec-${id}">${linkify(plain)}</div>`;
+      entry.content = plain;
+      entries.set(id, entry);
+      unlockedEl.style.display = '';
+      const actionsEl = lockEl.closest('.entry').querySelector('.entry-actions');
+      if (actionsEl) actionsEl.innerHTML = buildTextActions(entry, short);
+    } else {
+      // E2E file: verify via check_cipher, defer actual decrypt to download time
+      const ok = await verifyE2EFile(entry, pw);
+      if (!ok) {
+        inp.classList.add('error'); inp.value = ''; inp.focus();
+        toast(t('toastWrongPassword'), 'err');
+        return;
+      }
+      unlockedEntries.set(id, pw);
+      if (!lockEl || !unlockedEl) return;
+      lockEl.style.display = 'none';
+      unlockedEl.innerHTML = buildFileBody(entry);
+      unlockedEl.style.display = '';
+      const actionsEl = lockEl.closest('.entry').querySelector('.entry-actions');
+      if (actionsEl) actionsEl.innerHTML = buildE2EFileActions(entry);
+    }
+
+    startRelockTimer(id);
+    toast(t('toastUnlocked'));
+    return;
+  }
+
+  // Non-E2E path: server verifies password_hash (large file access control)
   const ph = await sha256(pw);
   ws.send(JSON.stringify({ type: 'verify', id, password_hash: ph }));
   pendingVerify.set(id, ph);
+}
+
+function buildE2EFileActions(entry) {
+  return `<button class="action-btn download" onclick="downloadE2EFile('${entry.id}')">${t('downloadBtn')}</button>${buildDeleteButton(entry)}`;
+}
+
+async function downloadE2EFile(id) {
+  const entry = entries.get(id);
+  const pw    = unlockedEntries.get(id);
+  if (!entry || !pw) { toast(t('toastSessionExpired'), 'err'); return; }
+
+  const btn = document.querySelector(`#ea-${id} .download`);
+  if (btn) { btn.disabled = true; btn.textContent = t('toastDecrypting'); }
+
+  try {
+    const resp = await fetch(`/download/${id}`);
+    if (!resp.ok) { toast(t('toastDownloadFailed'), 'err'); return; }
+    const cipherBuf = await resp.arrayBuffer();
+    const plainBuf  = await decryptFile(cipherBuf, entry.salt, entry.iv, pw);
+    if (!plainBuf) { toast(t('toastWrongPassword'), 'err'); return; }
+
+    const url = URL.createObjectURL(new Blob([plainBuf]));
+    const a = document.createElement('a');
+    a.href = url; a.download = entry.filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  } catch {
+    toast(t('toastDownloadFailed'), 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t('downloadBtn'); }
+  }
 }
 
 function handleVerifyResult(msg) {
@@ -1534,7 +1797,8 @@ window.addEventListener('keydown', e => {
 // ── Admin / Delete ────────────────────────────────────────────────────────────
 function canDelete(entry) {
   if (!myIp) return false;
-  if (!entry.locked) return true; // public: anyone may delete
+  if (!entry.locked) return true;
+  if (entry.e2e) return isAdmin || entry.sender === myIp; // server can't verify pw for E2E
   return isAdmin || entry.sender === myIp || unlockedEntries.has(entry.id);
 }
 
@@ -1557,8 +1821,12 @@ function confirmDeleteEntry(id) {
 function doDeleteEntry(id) {
   pendingDelete.delete(id);
   const msg = { type: 'delete', id };
-  const ph = unlockedEntries.get(id);
-  if (ph) msg.password_hash = ph;
+  const entry = entries.get(id);
+  // For non-E2E locked entries, include the password hash so the server can verify
+  if (entry && !entry.e2e) {
+    const ph = unlockedEntries.get(id);
+    if (ph) msg.password_hash = ph;
+  }
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
@@ -1602,7 +1870,14 @@ function relockEntry(id) {
   }
   if (unlockedEl) { unlockedEl.innerHTML = ''; unlockedEl.style.display = 'none'; }
   const badge = document.getElementById('lock-badge-' + id);
-  if (badge) { badge.textContent = t('lockedBadge'); badge.className = 'lock-badge'; }
+  if (badge) {
+    const entry = entries.get(id);
+    if (entry?.e2e) {
+      badge.textContent = t('e2eBadge'); badge.className = 'lock-badge e2e-badge';
+    } else {
+      badge.textContent = t('lockedBadge'); badge.className = 'lock-badge';
+    }
+  }
   const entryEl = document.querySelector(`.entry[data-id="${id}"]`);
   if (entryEl) {
     const actionsEl = entryEl.querySelector('.entry-actions');

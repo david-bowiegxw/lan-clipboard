@@ -138,6 +138,24 @@ MIT
 
 ## Changelog · 更新日志
 
+### v0.3.0 — 2026-05-14
+
+**E2E encryption · 端对端加密**
+- All password-protected text entries are now E2E encrypted in the browser using PBKDF2 (100k iterations) + AES-256-GCM; the server stores only ciphertext + salt + iv — no password hash, no plaintext  
+  所有加密文本条目现在在浏览器中端对端加密（PBKDF2 + AES-256-GCM），服务器仅存储密文及 salt/iv，不存储密码哈希或明文
+- Single files ≤ 100 MB with a password are also E2E encrypted before upload; the server stores only the encrypted blob  
+  密码保护的单文件（≤100MB）上传前在浏览器中加密，服务器仅存储密文
+- Files > 100 MB or multi-file uploads with a password fall back to the existing access-control model; a toast notification informs the user  
+  超过 100MB 或多文件上传带密码时，回退至原有的访问控制模型，并通过提示告知用户
+- Decryption is entirely client-side: wrong password = decrypt failure (no server round-trip)  
+  解密完全在客户端进行，密码错误立即反馈，服务器不参与密码校验
+- E2E entries display a distinct `🔐 E2E` badge (indigo) instead of the regular `🔒 Password` badge  
+  E2E 条目显示独立的蓝紫色 `🔐 E2E` 徽章，与普通密码保护区分
+- Delete permission for E2E entries is restricted to creator + admin (server cannot verify password ownership)  
+  E2E 条目的删除权限限于创建者和管理员（服务器无法验证密码归属）
+
+---
+
 ### v0.2.1 — 2026-05-14
 
 **Bug fixes · 问题修复**

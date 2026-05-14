@@ -91,7 +91,8 @@ def make_entry(entry_type, sender, password_hash="", uploader="", title="", **fi
 
 def public_entry(entry: dict) -> dict:
     e = dict(entry)
-    e["locked"] = bool(e.pop("password_hash", ""))
+    ph = e.pop("password_hash", "")
+    e["locked"] = bool(ph or e.get("e2e"))
     return e
 
 
@@ -174,23 +175,39 @@ async def ws_handler(websocket):
             mtype = msg.get("type")
 
             if mtype == "push":
-                content = str(msg.get("content", "")).strip()
-                if not content:
-                    continue
-                if len(content.encode()) > MAX_TEXT_SIZE:
-                    await send_error(websocket, "Content too large · 最大 1 MB")
-                    continue
-                entry = make_entry(
-                    "text", peer,
-                    password_hash=msg.get("password_hash", ""),
-                    uploader=str(msg.get("uploader", "")),
-                    title=str(msg.get("title", "")),
-                    content=content,
-                )
-                push_history(entry)
-                log.info(f"📋 Text  {peer}  {content[:60]!r}"
-                         f"{'…' if len(content) > 60 else ''}"
-                         f"{'  🔒' if entry['password_hash'] else ''}")
+                if "cipher" in msg:
+                    # E2E encrypted text: client sends cipher/salt/iv, no content/password_hash
+                    cipher = str(msg.get("cipher", ""))
+                    salt   = str(msg.get("salt", ""))
+                    iv     = str(msg.get("iv", ""))
+                    if not (cipher and salt and iv):
+                        await send_error(websocket, "Invalid E2E payload · 无效的加密数据")
+                        continue
+                    entry = make_entry(
+                        "text", peer,
+                        uploader=str(msg.get("uploader", "")),
+                        title=str(msg.get("title", "")),
+                        cipher=cipher, salt=salt, iv=iv, e2e=True,
+                    )
+                    push_history(entry)
+                    log.info(f"📋 Text (E2E🔐)  {peer}  [encrypted]")
+                else:
+                    # Plain text
+                    content = str(msg.get("content", "")).strip()
+                    if not content:
+                        continue
+                    if len(content.encode()) > MAX_TEXT_SIZE:
+                        await send_error(websocket, "Content too large · 最大 1 MB")
+                        continue
+                    entry = make_entry(
+                        "text", peer,
+                        uploader=str(msg.get("uploader", "")),
+                        title=str(msg.get("title", "")),
+                        content=content,
+                    )
+                    push_history(entry)
+                    log.info(f"📋 Text  {peer}  {content[:60]!r}"
+                             f"{'…' if len(content) > 60 else ''}")
                 # 给发送者单独回 ack（含 id），其它客户端收 new
                 await safe_send(websocket,
                                 {"type": "push_ack", "entry": public_entry(entry)})
@@ -234,8 +251,13 @@ async def ws_handler(websocket):
                 if entry is None:
                     await send_error(websocket, "Entry not found · 条目不存在")
                     continue
-                if entry.get("password_hash"):
-                    # Password-protected: must be admin, creator, or supply correct hash
+                if entry.get("e2e"):
+                    # E2E entry: server cannot verify password; only creator or admin may delete
+                    if not is_admin(peer) and entry.get("sender") != peer:
+                        await send_error(websocket, "Permission denied · 无权删除")
+                        continue
+                elif entry.get("password_hash"):
+                    # Access-control entry: admin, creator, or matching hash
                     provided_ph = msg.get("password_hash", "")
                     if (not is_admin(peer)
                             and entry.get("sender") != peer
@@ -310,6 +332,8 @@ async def upload_handler(request):
     peer = request.remote or "unknown"
     reader = await request.multipart()
     password_hash = uploader = title = ""
+    is_e2e = False
+    salt_e2e = iv_e2e = check_cipher_e2e = check_iv_e2e = ""
     tmp_files = []  # [(orig_name, tmp_path, size)]
 
     def cleanup_tmp():
@@ -327,6 +351,16 @@ async def upload_handler(request):
                 uploader = (await part.read()).decode()
             elif part.name == "title":
                 title = (await part.read()).decode()
+            elif part.name == "e2e":
+                is_e2e = (await part.read()).decode() == "1"
+            elif part.name == "salt":
+                salt_e2e = (await part.read()).decode()
+            elif part.name == "iv":
+                iv_e2e = (await part.read()).decode()
+            elif part.name == "check_cipher":
+                check_cipher_e2e = (await part.read()).decode()
+            elif part.name == "check_iv":
+                check_iv_e2e = (await part.read()).decode()
             elif part.name == "file":
                 orig_name = part.filename or "unnamed"
                 tmp_path = UPLOAD_DIR / f"tmp_{uuid.uuid4().hex}"
@@ -369,14 +403,26 @@ async def upload_handler(request):
                     tmp_path.unlink(missing_ok=True)
             size = dest.stat().st_size
 
-        entry = make_entry(
-            "file", peer, password_hash, uploader, title,
-            id=file_id, filename=filename, size=size,
-        )
+        if is_e2e:
+            if not (salt_e2e and iv_e2e and check_cipher_e2e and check_iv_e2e):
+                cleanup_tmp()
+                return web.json_response(
+                    {"ok": False, "msg": "Invalid E2E payload · 缺少加密参数"}, status=400)
+            entry = make_entry(
+                "file", peer, "", uploader, title,
+                id=file_id, filename=filename, size=size,
+                e2e=True, salt=salt_e2e, iv=iv_e2e,
+                check_cipher=check_cipher_e2e, check_iv=check_iv_e2e,
+            )
+        else:
+            entry = make_entry(
+                "file", peer, password_hash, uploader, title,
+                id=file_id, filename=filename, size=size,
+            )
         push_history(entry)
         size_str = (f"{size/(1024**3):.2f}GB" if size >= 1024**3
                     else f"{size//1024}KB")
-        log.info(f"📁 File  {peer}  {filename!r}  {size_str}"
+        log.info(f"📁 File{'(E2E🔐)' if is_e2e else ''}  {peer}  {filename!r}  {size_str}"
                  f"{'  🔒' if password_hash else ''}")
         await broadcast({"type": "new", "entry": public_entry(entry)})
         return web.json_response({"ok": True, "id": file_id,
@@ -393,7 +439,9 @@ async def download_handler(request):
     if entry is None or entry.get("type") != "file":
         return web.Response(status=404, text="File not found · 文件不存在或已被删除")
 
-    if entry.get("password_hash"):
+    if entry.get("e2e"):
+        pass  # E2E file: content is already encrypted; no server-side auth needed
+    elif entry.get("password_hash"):
         if request.query.get("ph", "") != entry["password_hash"]:
             return web.Response(status=403, text="Wrong password · 密码错误")
 
