@@ -159,17 +159,31 @@
     display: flex; gap: 0; margin-bottom: 24px;
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 4px; width: fit-content;
+    position: relative;
+  }
+  .tabs::before {
+    content: ''; position: absolute; top: 4px; left: 0;
+    width: var(--tab-w, 0); height: calc(100% - 8px);
+    background: var(--card); box-shadow: var(--shadow-sm); border-radius: 7px;
+    transform: translateX(var(--tab-x, 0));
+    transition: transform .22s cubic-bezier(.4,.2,.2,1), width .22s cubic-bezier(.4,.2,.2,1);
+    z-index: 0; pointer-events: none;
   }
   .tab-btn {
     padding: 8px 22px; border-radius: 7px; border: none; cursor: pointer;
     font-family: var(--sans); font-size: 13px; font-weight: 500;
-    background: transparent; color: var(--muted); transition: all .18s;
+    background: transparent; color: var(--muted); transition: color .18s;
     flex: 1 1 auto; white-space: nowrap;
+    position: relative; z-index: 1;
   }
-  .tab-btn.active { background: var(--card); color: var(--text); box-shadow: var(--shadow-sm); }
+  .tab-btn.active { color: var(--text); }
 
   .tab-panel { display: none; }
-  .tab-panel.active { display: block; }
+  .tab-panel.active { display: block; animation: tabFadeIn .22s ease both; }
+  @keyframes tabFadeIn {
+    from { opacity: 0; transform: translateX(8px); }
+    to   { opacity: 1; transform: none; }
+  }
 
   /* ── Input Section (text) ── */
   .input-section {
@@ -518,6 +532,25 @@
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: none; }
   }
+  @keyframes toastOut {
+    to { opacity: 0; transform: translateY(-6px); }
+  }
+  .toast.fade-out { animation: toastOut .2s ease forwards; }
+
+  /* Delete confirm slide-in */
+  @keyframes confirmIn {
+    from { opacity: 0; transform: translateX(10px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .confirm-anim { animation: confirmIn .18s ease both; }
+
+  /* Language switch flash */
+  @keyframes langFade {
+    0%   { opacity: 1; }
+    35%  { opacity: .3; }
+    100% { opacity: 1; }
+  }
+  body.lang-flash { animation: langFade .28s ease; }
 
   .empty { text-align: center; padding: 64px 0; color: var(--muted); font-size: 14px; }
   .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: .4; }
@@ -718,11 +751,11 @@ const i18n = {
     textBadge: '📝 文本',
     fileBadge: '📁 文件',
     lockedBadge: '🔒 需密码',
-    e2eBadge: '🔐 E2E',
+    e2eBadge: '🔐 完全加密',
     lockedDesc: (isFile) => isFile ? '该文件受密码保护' : '该内容受密码保护',
-    lockedDescE2E: (isFile) => isFile ? '该文件已端对端加密' : '该内容已端对端加密',
+    lockedDescE2E: (isFile) => isFile ? '此文件已完全加密，主机也无法查看' : '此内容已完全加密，主机也无法查看',
     lockedHint: '请输入密码查看',
-    lockedHintE2E: '输入密码在本地解密，服务器无法读取',
+    lockedHintE2E: '请输入密码查看',
     pwInputPlaceholder: '密码…',
     unlockBtn: '解锁',
     adminMine: '管理员 · 本机',
@@ -746,9 +779,9 @@ const i18n = {
     toastDecrypting: '解密中…',
     toastDownloadFailed: '下载失败',
     toastSessionExpired: '会话已过期，请重新解锁',
-    toastLargeFileNoE2E: '文件超过 100MB，将使用访问控制（非 E2E）',
-    toastMultiFileNoE2E: '多文件上传将使用访问控制（非 E2E）',
-    toastInsecureNoE2E: '当前为非安全上下文（需 HTTPS 或 localhost），已回退至访问控制（非 E2E）',
+    toastLargeFileNoE2E: '文件超过 100MB，将使用普通密码保护（主机可查看内容）',
+    toastMultiFileNoE2E: '多文件上传将使用普通密码保护（主机可查看内容）',
+    toastInsecureNoE2E: '当前网络不支持完全加密（需 HTTPS 或 localhost），将使用普通密码保护',
     toastFileReceived: '收到新文件',
     toastContentReceived: '收到新内容',
     toastFileSuccess: '文件上传成功 ✓',
@@ -808,11 +841,11 @@ const i18n = {
     textBadge: '📝 Text',
     fileBadge: '📁 File',
     lockedBadge: '🔒 Password',
-    e2eBadge: '🔐 E2E',
+    e2eBadge: '🔐 Encrypted',
     lockedDesc: (isFile) => isFile ? 'This file is password protected' : 'This content is password protected',
-    lockedDescE2E: (isFile) => isFile ? 'This file is E2E encrypted' : 'This content is E2E encrypted',
+    lockedDescE2E: (isFile) => isFile ? "Fully encrypted — even the host can't view this file" : "Fully encrypted — even the host can't view this content",
     lockedHint: 'Enter the password to view',
-    lockedHintE2E: 'Enter password to decrypt locally — server never sees the plaintext',
+    lockedHintE2E: 'Enter the password to view',
     pwInputPlaceholder: 'Password…',
     unlockBtn: 'Unlock',
     adminMine: 'Admin · This device',
@@ -836,9 +869,9 @@ const i18n = {
     toastDecrypting: 'Decrypting…',
     toastDownloadFailed: 'Download failed',
     toastSessionExpired: 'Session expired, please unlock again',
-    toastLargeFileNoE2E: 'File > 100 MB — using access control (not E2E)',
-    toastMultiFileNoE2E: 'Multi-file upload uses access control (not E2E)',
-    toastInsecureNoE2E: 'Insecure context (HTTPS / localhost required) — falling back to access control (not E2E)',
+    toastLargeFileNoE2E: 'File > 100 MB — using password protection (host can view content)',
+    toastMultiFileNoE2E: 'Multi-file upload uses password protection (host can view content)',
+    toastInsecureNoE2E: 'Connection does not support full encryption (HTTPS / localhost required) — using password protection',
     toastFileReceived: 'New file received',
     toastContentReceived: 'New content received',
     toastFileSuccess: 'File uploaded ✓',
@@ -922,11 +955,17 @@ function applyLang() {
     const hint = document.getElementById('emptyHint');
     if (hint) hint.textContent = t('emptyHint');
   }
+  // Button widths may shift after text swap — recompute the sliding indicator.
+  updateTabIndicator(document.querySelector('.tab-btn.active'));
   localStorage.setItem('lang', lang);
 }
 
 function toggleLang() {
   lang = lang === 'zh' ? 'en' : 'zh';
+  // Force the animation to restart on every toggle by removing+reflow+adding.
+  document.body.classList.remove('lang-flash');
+  void document.body.offsetWidth;
+  document.body.classList.add('lang-flash');
   applyLang();
 }
 
@@ -1121,12 +1160,26 @@ function linkify(text) {
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
+function updateTabIndicator(btn) {
+  const tabs = btn?.parentElement;
+  if (!tabs) return;
+  const b = btn.getBoundingClientRect();
+  const t = tabs.getBoundingClientRect();
+  tabs.style.setProperty('--tab-x', (b.left - t.left - 4) + 'px');
+  tabs.style.setProperty('--tab-w', b.width + 'px');
+}
+
 function switchTab(name, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
+  updateTabIndicator(btn);
 }
+
+window.addEventListener('resize', () => {
+  updateTabIndicator(document.querySelector('.tab-btn.active'));
+});
 
 // ── Password toggles ──────────────────────────────────────────────────────────
 function togglePw(prefix, cb) {
@@ -1821,9 +1874,9 @@ function confirmDeleteEntry(id) {
   if (!actionsEl) return;
   pendingDelete.set(id, actionsEl.innerHTML);
   actionsEl.innerHTML = `
-    <span class="confirm-delete-msg">${t('confirmDelete')}</span>
-    <button class="action-btn danger" onclick="doDeleteEntry('${id}')">${t('confirmYes')}</button>
-    <button class="action-btn" onclick="cancelDeleteEntry('${id}')">${t('confirmNo')}</button>
+    <span class="confirm-delete-msg confirm-anim">${t('confirmDelete')}</span>
+    <button class="action-btn danger confirm-anim" onclick="doDeleteEntry('${id}')">${t('confirmYes')}</button>
+    <button class="action-btn confirm-anim" onclick="cancelDeleteEntry('${id}')">${t('confirmNo')}</button>
   `;
 }
 
@@ -1919,12 +1972,18 @@ function toast(msg, type = '') {
   el.className = 'toast' + (type ? ' ' + type : '');
   el.textContent = msg;
   document.getElementById('toastWrap').appendChild(el);
-  setTimeout(() => el.remove(), 2800);
+  // Adaptive lifetime: short toasts stay ~2 s, long ones up to 6 s so the text is readable.
+  const lifetime = Math.min(6000, Math.max(2000, 1500 + msg.length * 100));
+  setTimeout(() => {
+    el.classList.add('fade-out');
+    setTimeout(() => el.remove(), 220);
+  }, lifetime);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 applyTheme();
 applyLang();
+updateTabIndicator(document.querySelector('.tab-btn.active'));
 connect();
 </script>
 </body>

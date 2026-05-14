@@ -138,6 +138,24 @@ MIT
 
 ## Changelog · 更新日志
 
+### v0.3.2 — 2026-05-14
+
+**UI polish · 交互动效**
+- Active tab indicator now slides between Text / File with a cubic-bezier transform instead of jumping. Tab content fades + translates in on switch  
+  Text / File 切换时活跃指示器使用平移过渡（cubic-bezier），不再瞬切；面板内容淡入并轻微平移
+- Inline delete confirm row slides in from the right with a short fade  
+  内联删除确认按钮自右侧平移淡入
+- Language toggle plays a brief dim-and-restore fade so the text swap doesn't feel like a flicker  
+  中英文切换时整页轻微淡出再淡入，文本替换不再突兀
+- Toasts now have an exit animation and an adaptive lifetime (2 s for short messages, scaling up to 6 s for long ones) so users have time to read longer notices  
+  Toast 增加退出动画，并根据文本长度自适应停留时间（2 秒到 6 秒），长提示有充足阅读时间
+
+**Friendlier wording · 文案优化**
+- Replaced the technical `E2E` terminology in user-facing UI. The badge now reads `🔐 完全加密` / `🔐 Encrypted`, lock descriptions tell users plainly that the host cannot view the content, and fallback toasts say "using password protection (host can view content)" instead of mentioning the E2E acronym  
+  用户界面中的 `E2E` 技术术语已替换为更友好的描述：徽章改为 `🔐 完全加密`，锁定提示直接告诉用户「主机也无法查看」，回退提示改为「使用普通密码保护（主机可查看内容）」
+
+---
+
 ### v0.3.1 — 2026-05-14
 
 **Bug fixes · 问题修复**
