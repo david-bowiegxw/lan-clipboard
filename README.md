@@ -138,6 +138,16 @@ MIT
 
 ## Changelog · 更新日志
 
+### v0.2.1 — 2026-05-14
+
+**Bug fixes · 问题修复**
+- Password input is now cleared when an entry relocks, so the previous password is no longer visible after auto-relock  
+  自动重锁后密码输入框内容会被清空，不再留存上次输入的密码
+- Relock countdown now uses wall-clock time (`Date.now()`) instead of `setInterval` ticks, so it correctly fires immediately after the screen wakes from sleep  
+  倒计时改用真实时钟计算剩余时间，手机锁屏后唤醒可立即触发重锁，不再继续上次暂停处的计数
+
+---
+
 ### v0.2.0 — 2026-05-14
 
 **Delete permission overhaul · 删除权限重构**

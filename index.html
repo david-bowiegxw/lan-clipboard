@@ -1575,21 +1575,19 @@ function cancelDeleteEntry(id) {
 // ── Relock timer ──────────────────────────────────────────────────────────────
 function startRelockTimer(id) {
   if (unlockedTimers.has(id)) clearInterval(unlockedTimers.get(id));
-  let remaining = RELOCK_SECONDS;
-  const updateBadge = () => {
+  const expireAt = Date.now() + RELOCK_SECONDS * 1000;
+  const tick = () => {
+    const remaining = Math.max(0, Math.round((expireAt - Date.now()) / 1000));
     const badge = document.getElementById('lock-badge-' + id);
     if (badge) { badge.textContent = `🔓 ${remaining}s`; badge.className = 'lock-badge unlocked-timer'; }
-  };
-  updateBadge();
-  const iv = setInterval(() => {
-    remaining--;
-    updateBadge();
     if (remaining <= 0) {
       clearInterval(iv);
       unlockedTimers.delete(id);
       relockEntry(id);
     }
-  }, 1000);
+  };
+  tick();
+  const iv = setInterval(tick, 1000);
   unlockedTimers.set(id, iv);
 }
 
@@ -1597,7 +1595,11 @@ function relockEntry(id) {
   unlockedEntries.delete(id);
   const lockEl = document.getElementById('lock-' + id);
   const unlockedEl = document.getElementById('unlocked-' + id);
-  if (lockEl) lockEl.style.display = '';
+  if (lockEl) {
+    lockEl.style.display = '';
+    const inp = document.getElementById('vp-' + id);
+    if (inp) inp.value = '';
+  }
   if (unlockedEl) { unlockedEl.innerHTML = ''; unlockedEl.style.display = 'none'; }
   const badge = document.getElementById('lock-badge-' + id);
   if (badge) { badge.textContent = t('lockedBadge'); badge.className = 'lock-badge'; }
