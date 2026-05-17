@@ -513,6 +513,10 @@
     cursor: pointer; font-family: var(--sans); font-size: 13px; transition: all .18s;
   }
   .modal-close:hover { border-color: var(--accent2); color: var(--text); }
+  .noE2E-actions { display: flex; gap: 8px; width: 100%; }
+  .noE2E-actions .modal-close { flex: 1; }
+  .noE2E-confirm-btn { border-color: var(--warn); color: var(--warn); }
+  .noE2E-confirm-btn:hover { border-color: var(--warn); color: var(--warn); background: oklch(from var(--warn) l c h / 0.08); }
 
   /* ── Toast ── */
   .toast-wrap {
@@ -588,6 +592,18 @@
     <div class="qr-url" id="qrUrl"></div>
     <div class="modal-sub" id="qrModalSub">与本机在同一 Wi-Fi 下扫描即可</div>
     <button class="modal-close" onclick="closeModal()" id="qrClose">关闭</button>
+  </div>
+</div>
+
+<!-- No-E2E upload confirm modal -->
+<div class="modal-overlay" id="noE2EModal">
+  <div class="modal">
+    <div class="modal-title" id="noE2EModalTitle">⚠️ 未端到端加密</div>
+    <div class="modal-sub" id="noE2EModalBody" style="line-height: 1.55; font-family: var(--sans); color: var(--text); font-size: 13px;"></div>
+    <div class="noE2E-actions">
+      <button class="modal-close" id="noE2ECancel">取消</button>
+      <button class="modal-close noE2E-confirm-btn" id="noE2EConfirm">仍然上传</button>
+    </div>
   </div>
 </div>
 
@@ -782,9 +798,12 @@ const i18n = {
     toastDecrypting: '解密中…',
     toastDownloadFailed: '下载失败',
     toastSessionExpired: '会话已过期，请重新解锁',
-    toastLargeFileNoE2E: '文件超过 100MB，将使用普通密码保护（主机可查看内容）',
-    toastMultiFileNoE2E: '多文件上传将使用普通密码保护（主机可查看内容）',
     toastInsecureNoE2E: '当前网络不支持完全加密（需 HTTPS 或 localhost），将使用普通密码保护',
+    noE2ETitle: '⚠️ 此次上传未端到端加密',
+    noE2EBodyLarge: '文件超过 100 MB，浏览器无法进行端到端加密。文件将以原文形式上传到主机（仅用密码限制访问），主机管理员可查看文件内容。是否仍然上传？',
+    noE2EBodyMulti: '多文件上传时浏览器无法进行端到端加密。文件将以原文形式上传到主机（仅用密码限制访问），主机管理员可查看文件内容。是否仍然上传？',
+    noE2EBodyInsecure: '当前连接非 HTTPS / localhost，浏览器无法进行端到端加密。文件将以原文形式上传到主机（仅用密码限制访问），主机管理员可查看文件内容。是否仍然上传？',
+    noE2EConfirm: '仍然上传',
     toastFileReceived: '收到新文件',
     toastContentReceived: '收到新内容',
     toastFileSuccess: '文件上传成功 ✓',
@@ -872,9 +891,12 @@ const i18n = {
     toastDecrypting: 'Decrypting…',
     toastDownloadFailed: 'Download failed',
     toastSessionExpired: 'Session expired, please unlock again',
-    toastLargeFileNoE2E: 'File > 100 MB — using password protection (host can view content)',
-    toastMultiFileNoE2E: 'Multi-file upload uses password protection (host can view content)',
     toastInsecureNoE2E: 'Connection does not support full encryption (HTTPS / localhost required) — using password protection',
+    noE2ETitle: '⚠️ This upload is not end-to-end encrypted',
+    noE2EBodyLarge: 'Files larger than 100 MB cannot be end-to-end encrypted in the browser. The file will be uploaded as plaintext (password only restricts access) and the host admin can view its contents. Upload anyway?',
+    noE2EBodyMulti: 'Multi-file uploads cannot be end-to-end encrypted in the browser. The files will be uploaded as plaintext (password only restricts access) and the host admin can view their contents. Upload anyway?',
+    noE2EBodyInsecure: 'This connection is not HTTPS / localhost, so the browser cannot perform end-to-end encryption. The file will be uploaded as plaintext (password only restricts access) and the host admin can view its contents. Upload anyway?',
+    noE2EConfirm: 'Upload anyway',
     toastFileReceived: 'New file received',
     toastContentReceived: 'New content received',
     toastFileSuccess: 'File uploaded ✓',
@@ -1415,10 +1437,11 @@ async function uploadFile() {
 
   if (pw && !isE2E) {
     let reason;
-    if (!e2eOk)        reason = 'toastInsecureNoE2E';
-    else if (!isSingle) reason = 'toastMultiFileNoE2E';
-    else                reason = 'toastLargeFileNoE2E';
-    toast(t(reason), 'warn');
+    if (!e2eOk)         reason = 'Insecure';
+    else if (!isSingle) reason = 'Multi';
+    else                reason = 'Large';
+    const ok = await confirmNoE2E(reason);
+    if (!ok) return;
   }
 
   if (isE2E) {
@@ -1987,6 +2010,27 @@ function closeModal() {
   setTimeout(() => { overlay.classList.remove('open', 'closing'); }, 180);
 }
 function closeQR(e) { if (e.target === document.getElementById('qrModal')) closeModal(); }
+
+// Pre-upload confirm when password is set but E2E is unavailable (>100MB / multi-file / insecure network).
+// reason ∈ {'Large','Multi','Insecure'}. Returns Promise<bool>: true = upload anyway, false = cancel.
+function confirmNoE2E(reason) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('noE2EModal');
+    document.getElementById('noE2EModalTitle').textContent = t('noE2ETitle');
+    document.getElementById('noE2EModalBody').textContent  = t('noE2EBody' + reason);
+    const cancelBtn  = document.getElementById('noE2ECancel');
+    const confirmBtn = document.getElementById('noE2EConfirm');
+    cancelBtn.textContent  = t('confirmNo');
+    confirmBtn.textContent = t('noE2EConfirm');
+    overlay.classList.add('open');
+    const close = (val) => {
+      overlay.classList.add('closing');
+      setTimeout(() => { overlay.classList.remove('open', 'closing'); resolve(val); }, 180);
+    };
+    cancelBtn.onclick  = () => close(false);
+    confirmBtn.onclick = () => close(true);
+  });
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function toast(msg, type = '') {

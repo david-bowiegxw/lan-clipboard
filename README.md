@@ -138,6 +138,16 @@ MIT
 
 ## Changelog · 更新日志
 
+### v0.3.3 — 2026-05-17
+
+**Pre-upload confirmation for non-E2E files · 非端到端加密文件上传前二次确认**
+- When a file upload sets a password but cannot be end-to-end encrypted (file > 100 MB, multi-file upload, or non-HTTPS/non-localhost connection), the browser now shows a styled confirmation modal before uploading. The user must explicitly choose **Upload anyway** or **Cancel** — the host can view the file contents in those cases, and the modal makes that risk explicit  
+  上传带密码的文件时，若无法进行端到端加密（文件 >100 MB、多文件、或非 HTTPS/localhost 连接），浏览器会弹出确认对话框，必须显式选择「仍然上传」或「取消」。这些情况下主机可查看文件内容，对话框让风险一目了然
+- Replaces the silent warn-toast fallback from v0.3.0–v0.3.2; text uploads are unaffected (text is always E2E on HTTPS/localhost)  
+  替代 v0.3.0–v0.3.2 中「仅 toast 警示后直接上传」的行为；文本上传不受影响（HTTPS/localhost 下文本始终端到端加密）
+
+---
+
 ### v0.3.2 — 2026-05-14
 
 **Mobile UX · 移动端输入框**
