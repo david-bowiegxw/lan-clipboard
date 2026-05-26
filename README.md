@@ -138,6 +138,16 @@ MIT
 
 ## Changelog · 更新日志
 
+### v0.3.4 — 2026-05-26
+
+**Terminal QR code at startup · 启动时打印二维码**
+- The server now renders an ASCII QR code of the Web UI URL in the startup banner. Scan it with any phone camera to open the clipboard — no typing the IP  
+  启动 banner 中直接打印 Web UI 地址的 ASCII 二维码。手机相机扫一下即可访问，不必手动输入 IP
+- Uses the same `qrcode` library that was already imported for the `/qr` SVG endpoint; falls back gracefully when stdout is not a tty (piped / redirected)  
+  复用已有的 `qrcode` 库（先前仅用于 `/qr` SVG 端点）；当输出不是 tty（管道 / 重定向）时自动回退到双宽字符模式
+
+---
+
 ### v0.3.3 — 2026-05-17
 
 **Pre-upload confirmation for non-E2E files · 非端到端加密文件上传前二次确认**

@@ -10,6 +10,7 @@ import json
 import logging
 import signal
 import socket
+import sys
 import urllib.parse
 import uuid
 import zipfile
@@ -466,18 +467,32 @@ def build_http_app() -> web.Application:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def print_qr_to_terminal(data: str):
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=2,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    qr.print_ascii(tty=sys.stdout.isatty())
+
+
 async def main():
+    url = f"http://{LOCAL_IP}:{HTTP_PORT}"
     bar = "═" * 54
     print(f"\n{bar}")
     print("  📋  LAN Clipboard  局域网剪贴板")
     print(bar)
     print(f"  Local IP   : {LOCAL_IP}")
-    print(f"  Web UI     : http://{LOCAL_IP}:{HTTP_PORT}")
+    print(f"  Web UI     : {url}")
     print(f"  WebSocket  : ws://{LOCAL_IP}:{WS_PORT}")
     print(f"  Upload dir : {UPLOAD_DIR}")
     print("─" * 54)
-    print("  Open the URL above on any device in your local network")
-    print("  在同一局域网的任何设备上打开上方地址")
+    print("  Scan the QR code below, or open the URL on any device")
+    print("  扫描下方二维码，或在同一局域网设备上打开上方地址")
+    print()
+    print_qr_to_terminal(url)
     print("  Press Ctrl+C to stop · 按 Ctrl+C 停止服务")
     print(f"{bar}\n")
 
